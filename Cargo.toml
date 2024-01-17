@@ -1,0 +1,14 @@
+[package]
+name = "bevy_animation"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = { default-features = false, version = "0.12", features = [
+    "bevy_winit",
+    "bevy_ui",
+    "png"
+]}
+interpolation = "0.3"
