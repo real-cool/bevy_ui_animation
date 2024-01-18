@@ -1,4 +1,7 @@
-use crate::{ui::builder::{Class, UiBuilder}, animator::Animator};
+use crate::{
+    animator::Animator,
+    ui::builder::{Class, UiBuilder},
+};
 use bevy::prelude::*;
 
 pub fn root<P>(
@@ -27,7 +30,24 @@ pub fn na<P, A>(
     class.apply(&mut bundle, commands.world);
     let mut animator = Animator::default();
     animate_class.apply(&mut animator, commands.world);
-    commands.spawn((bundle, animator)).with_children(children).id()
+    commands
+        .spawn((bundle, animator))
+        .with_children(children)
+        .id()
+}
+
+pub fn sa<P, A>(
+    class: impl Class<P, In = SpriteBundle>,
+    animate_class: impl Class<A, In = Animator>,
+    ext: impl Bundle,
+    world: &World,
+    commands: &mut Commands,
+) -> Entity {
+    let mut bundle = SpriteBundle::default();
+    class.apply(&mut bundle, world);
+    let mut animator = Animator::default();
+    animate_class.apply(&mut animator, world);
+    commands.spawn((bundle, animator, ext)).id()
 }
 
 pub fn nodei<P>(
@@ -70,6 +90,21 @@ pub fn text<P, P1>(
     commands: &mut UiBuilder,
 ) -> Entity {
     texti(text, class, text_class, (), commands)
+}
+
+pub fn text_2d<P, P1>(
+    text: impl Into<String>,
+    class: impl Class<P1, In = Text2dBundle>,
+    text_class: impl Class<P, In = TextStyle>,
+    world: &World,
+    commands: &mut Commands,
+) -> Entity {
+    let mut style = TextStyle::default();
+    text_class.apply(&mut style, world);
+    let mut bundle = Text2dBundle::default();
+    bundle.text = Text::from_section(text, style);
+    class.apply(&mut bundle, world);
+    commands.spawn(bundle).id()
 }
 
 pub fn buttoni<P>(

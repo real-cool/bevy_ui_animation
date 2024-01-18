@@ -8,31 +8,24 @@ use std::{
 
 #[derive(Component, Default, Debug)]
 pub struct Animator {
+    total_times: f32,
     exectable: bool,
     exec_index: usize,
     exec_loop: bool,
     exec_step: bool,
-    progress: Duration,
+    forward: bool,
+    progress: f32,
+    fract: f32,
     init_style: bool,
     init_text: bool,
     init_background: bool,
     init_transform: bool,
+    init_sprite: bool,
     start: Anim,
     animations: Vec<Animation>,
 }
 
 impl Animator {
-    pub fn get_cur_total_duration(&self) -> Duration {
-        match self.animations.get(self.exec_index) {
-            Some(animation) => match animation.repeat {
-                Repeat::Finite(count) => animation.per * count as u32,
-                Repeat::Infinite => Duration::MAX,
-                Repeat::Duration(duration) => duration,
-            },
-            None => Duration::ZERO,
-        }
-    }
-
     pub fn set_exec(&mut self, exectable: bool) -> &mut Self {
         self.exectable = exectable;
         self
@@ -53,80 +46,68 @@ impl Animator {
         self.animations.last_mut().unwrap()
     }
 
-    pub fn restart(&mut self, index: usize) {
-        self.start_animation(index, self.animations.len(), true);
+    pub fn add_change_start(&mut self, index: usize) {
+        self.start = self.start + self.animations[self.exec_index].change;
+        self.start(index);
     }
 
-    fn start_animation(&mut self, index: usize, len: usize, restart: bool) {
-        if index < len {
-            let pre_index = self.exec_index;
-            self.exec_index = index;
-            self.progress = Duration::ZERO;
-            if pre_index > index {
-                for i in index..pre_index {
-                    let animation = self.animations.get(i).unwrap();
-                    self.start = self.start - animation.change;
-                }
-            } else if pre_index < index {
-                for i in pre_index..index {
-                    let animation = self.animations.get(i).unwrap();
-                    self.start = self.start + animation.change;
-                }
-            } else if !restart {
-                self.progress = self.get_cur_total_duration();
+    pub fn progress(&self) -> f32 {
+        self.progress
+    }
+
+    pub fn start(&mut self, index: usize) {
+        self.reset_progress();
+        if self.exec_index == index {
+            return;
+        }
+        if self.exec_index > index {
+            for i in index..self.exec_index {
+                self.start = self.start - (&self.animations[i]).change;
+            }
+        } else if self.exec_index < index {
+            for i in self.exec_index..index {
+                self.start = self.start + (&self.animations[i]).change;
             }
         }
+        self.exec_index = index;
+    }
+
+    fn add_delta(&mut self, delta: Duration) {
+        if let Some(animation) = self.animations.get(self.exec_index) {
+            self.progress =
+                self.progress + (delta.as_secs_f64() / animation.per.as_secs_f64()) as f32;
+            self.fract = self.progress.fract();
+            self.forward = self.progress.trunc() as u8 % 2 == 0;
+        }
+    }
+
+    fn reset_progress(&mut self) {
+        self.progress = 0.;
+        self.fract = 0.;
+        self.forward = true;
+    }
+
+    pub fn total_times(&self) -> f32 {
+        self.total_times
     }
 
     pub fn tick_progress(&mut self, delta: Duration) {
         if !self.exectable {
             return;
         }
-        self.progress += delta;
-        let cur_total_duration = self.get_cur_total_duration();
-        if self.progress > cur_total_duration {
-            if self.exec_step {
-                self.progress = cur_total_duration;
-            } else {
-                let len = self.animations.len();
-                if self.exec_loop {
-                    self.start_animation((self.exec_index + 1) % len, len, true);
-                } else {
-                    self.start_animation((self.exec_index + 1).min(len - 1), len, false);
-                }
-            }
-        }
-    }
-
-    pub fn get_finished(&self, animation: &Animation) -> bool {
-        self.progress >= self.get_total(animation)
-    }
-
-    fn get_total(&self, animation: &Animation) -> Duration {
-        match animation.repeat {
-            Repeat::Finite(count) => animation.per * count as u32,
-            Repeat::Infinite => Duration::MAX,
-            Repeat::Duration(duration) => duration,
-        }
-    }
-
-    fn get_forward(&self, mirror: bool, animation: &Animation) -> bool {
-        !mirror || (mirror && (self.progress.as_nanos() / animation.per.as_nanos()) % 2 == 0)
-    }
-
-    fn get_fract(&self, animation: &Animation) -> f32 {
-        (self.progress.as_secs_f32() / animation.per.as_secs_f32()).fract()
-    }
-
-    fn get_factor(&self, mirror: bool, animation: &Animation) -> f32 {
-        let fac = self.get_fract(animation);
-        if self.get_forward(mirror, animation) {
-            if self.get_finished(animation) {
-                return 1.;
-            }
-            fac
+        if self.progress == 0. {
+            self.total_times = self.animations[self.exec_index].total_times;
+            self.add_delta(delta);
+        } else if self.progress < self.total_times {
+            self.add_delta(delta);
+        } else if self.exec_step {
+            self.progress = self.total_times;
+        } else if self.exec_loop {
+            self.start((self.exec_index + 1) % self.animations.len());
+        } else if self.exec_index + 1 == self.animations.len() {
+            self.progress = self.total_times;
         } else {
-            1. - fac
+            self.start(self.exec_index + 1);
         }
     }
 
@@ -168,54 +149,88 @@ impl Animator {
         }
     }
 
+    pub fn init_sprite(&mut self, sprite: &mut Sprite) {
+        if !self.init_sprite {
+            if let Some(size) = sprite.custom_size {
+                self.start.sprite_width = size.x;
+                self.start.sprite_height = size.y;
+            }
+            self.start.sprite_color = sprite.color;
+            self.init_sprite = true;
+        }
+    }
+
     pub fn tick_style(&mut self, style: &mut Style) {
         self.init_style(style);
-        if let Some(animation) = self.animations.get(self.exec_index) {
+        if let Some(ani) = self.animations.get(self.exec_index) {
             self.start.lerp_style(
                 style,
-                &animation.change,
-                animation
-                    .ease_method
-                    .tick(self.get_factor(animation.mirror, animation)),
+                &ani.change,
+                ani.ease_method.tick(if self.forward {
+                    self.fract
+                } else {
+                    1. - self.fract
+                }),
             );
         }
     }
 
     pub fn tick_text(&mut self, text: &mut Text) {
         self.init_text(text);
-        if let Some(animation) = self.animations.get(self.exec_index) {
+        if let Some(ani) = self.animations.get(self.exec_index) {
             self.start.lerp_text(
                 text,
-                &animation.change,
-                animation
-                    .ease_method
-                    .tick(self.get_factor(animation.mirror, animation)),
+                &ani.change,
+                ani.ease_method.tick(if self.forward {
+                    self.fract
+                } else {
+                    1. - self.fract
+                }),
             );
         }
     }
 
     pub fn tick_background(&mut self, background: &mut BackgroundColor) {
         self.init_background(background);
-        if let Some(animation) = self.animations.get(self.exec_index) {
+        if let Some(ani) = self.animations.get(self.exec_index) {
             self.start.lerp_background(
                 background,
-                &animation.change,
-                animation
-                    .ease_method
-                    .tick(self.get_factor(animation.mirror, animation)),
+                &ani.change,
+                ani.ease_method.tick(if self.forward {
+                    self.fract
+                } else {
+                    1. - self.fract
+                }),
             );
         }
     }
 
     pub fn tick_transform(&mut self, transform: &mut Transform) {
         self.init_transform(transform);
-        if let Some(animation) = self.animations.get(self.exec_index) {
+        if let Some(ani) = self.animations.get(self.exec_index) {
             self.start.lerp_transform(
                 transform,
-                &animation.change,
-                animation
-                    .ease_method
-                    .tick(self.get_factor(animation.mirror, animation)),
+                &ani.change,
+                ani.ease_method.tick(if self.forward {
+                    self.fract
+                } else {
+                    1. - self.fract
+                }),
+            );
+        }
+    }
+
+    pub fn tick_sprite(&mut self, sprite: &mut Sprite) {
+        self.init_sprite(sprite);
+        if let Some(ani) = self.animations.get(self.exec_index) {
+            self.start.lerp_sprite(
+                sprite,
+                &ani.change,
+                ani.ease_method.tick(if self.forward {
+                    self.fract
+                } else {
+                    1. - self.fract
+                }),
             );
         }
     }
@@ -225,12 +240,13 @@ impl Animator {
 pub struct Animation {
     per: Duration,
     repeat: Repeat,
+    total_times: f32,
     mirror: bool,
     ease_method: EaseMethod,
     change: Anim,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Anim {
     style_width: Val,
     style_height: Val,
@@ -244,6 +260,9 @@ pub struct Anim {
     transform_translation: Vec3,
     transform_rotation: Quat,
     transform_scale: Vec3,
+    sprite_width: f32,
+    sprite_height: f32,
+    sprite_color: Color,
 }
 
 impl Default for Anim {
@@ -261,6 +280,9 @@ impl Default for Anim {
             transform_translation: Vec3::ZERO,
             transform_rotation: Quat::from_vec4(Vec4::ZERO),
             transform_scale: Vec3::ZERO,
+            sprite_width: 0.,
+            sprite_height: 0.,
+            sprite_color: Color::NONE,
         }
     }
 }
@@ -281,31 +303,67 @@ macro_rules! lerp_val {
 
 impl Anim {
     fn lerp_style(&self, target: &mut Style, change: &Self, ratio: f32) {
-        target.width = lerp_val!(self, change, style_width, ratio);
-        target.height = lerp_val!(self, change, style_height, ratio);
-        target.left = lerp_val!(self, change, style_left, ratio);
-        target.right = lerp_val!(self, change, style_right, ratio);
-        target.top = lerp_val!(self, change, style_top, ratio);
-        target.bottom = lerp_val!(self, change, style_bottom, ratio);
+        if change.style_width != Val::Auto {
+            target.width = lerp_val!(self, change, style_width, ratio);
+        }
+        if change.style_height != Val::Auto {
+            target.height = lerp_val!(self, change, style_height, ratio);
+        }
+        if change.style_left != Val::Auto {
+            target.left = lerp_val!(self, change, style_left, ratio);
+        }
+        if change.style_right != Val::Auto {
+            target.right = lerp_val!(self, change, style_right, ratio);
+        }
+        if change.style_top != Val::Auto {
+            target.top = lerp_val!(self, change, style_top, ratio);
+        }
+        if change.style_bottom != Val::Auto {
+            target.bottom = lerp_val!(self, change, style_bottom, ratio);
+        }
     }
 
     fn lerp_text(&self, target: &mut Text, change: &Self, ratio: f32) {
         if let Some(section) = target.sections.get_mut(0) {
-            section.style.font_size = self.text_font_size + change.text_font_size * ratio;
-            section.style.color = self.text_font_color + change.text_font_color * ratio;
+            if change.text_font_size != 0. {
+                section.style.font_size = self.text_font_size + change.text_font_size * ratio;
+            }
+            if change.text_font_color != Color::NONE {
+                section.style.color = self.text_font_color + change.text_font_color * ratio;
+            }
         }
     }
 
     fn lerp_background(&self, target: &mut BackgroundColor, change: &Self, ratio: f32) {
-        target.0 = self.background_color + change.background_color * ratio;
+        if target.0 != Color::NONE {
+            target.0 = self.background_color + change.background_color * ratio;
+        }
     }
 
     fn lerp_transform(&self, target: &mut Transform, change: &Self, ratio: f32) {
-        target.translation = self.transform_translation + change.transform_translation * ratio;
-        target.rotation = self
-            .transform_rotation
-            .slerp(change.transform_rotation + self.transform_rotation, ratio);
-        target.scale = self.transform_scale + change.transform_scale * ratio;
+        if change.transform_translation != Vec3::ZERO {
+            target.translation = self.transform_translation + change.transform_translation * ratio;
+        }
+        if change.transform_rotation != Quat::from_vec4(Vec4::ZERO) {
+            target.rotation = self
+                .transform_rotation
+                .slerp(change.transform_rotation + self.transform_rotation, ratio);
+        }
+        if change.transform_scale != Vec3::ZERO {
+            target.scale = self.transform_scale + change.transform_scale * ratio;
+        }
+    }
+
+    fn lerp_sprite(&self, target: &mut Sprite, change: &Self, ratio: f32) {
+        if change.sprite_width != 0. || change.sprite_height != 0. {
+            target.custom_size = Some(Vec2::new(
+                self.sprite_width + change.sprite_width * ratio,
+                self.sprite_height + change.sprite_height * ratio,
+            ))
+        }
+        if change.sprite_color != Color::NONE {
+            target.color = self.sprite_color + change.sprite_color * ratio;
+        }
     }
 }
 
@@ -326,6 +384,9 @@ impl Add for Anim {
             transform_translation: self.transform_translation + rhs.transform_translation,
             transform_rotation: self.transform_rotation + rhs.transform_rotation,
             transform_scale: self.transform_scale + rhs.transform_scale,
+            sprite_width: self.sprite_width + rhs.sprite_width,
+            sprite_height: self.sprite_height + rhs.sprite_height,
+            sprite_color: self.sprite_color + rhs.sprite_color,
         }
     }
 }
@@ -347,11 +408,22 @@ impl Sub for Anim {
             transform_translation: self.transform_translation - rhs.transform_translation,
             transform_rotation: self.transform_rotation - rhs.transform_rotation,
             transform_scale: self.transform_scale - rhs.transform_scale,
+            sprite_width: self.sprite_width - rhs.sprite_width,
+            sprite_height: self.sprite_height - rhs.sprite_height,
+            sprite_color: sub_color(self.sprite_color, rhs.sprite_color),
         }
     }
 }
 
 impl Animation {
+    fn get_total_times(&self) -> f32 {
+        match self.repeat {
+            Repeat::Finite(count) => count as f32,
+            Repeat::Infinite => f32::MAX,
+            Repeat::Duration(duration) => duration.as_secs_f32() / self.per.as_secs_f32(),
+        }
+    }
+
     pub fn set_mirror(&mut self, mirror: bool) -> &mut Self {
         self.mirror = mirror;
         self
@@ -365,17 +437,20 @@ impl Animation {
     ) -> &mut Self {
         self.per = per;
         self.repeat = repeat;
+        self.total_times = self.get_total_times();
         self.ease_method = ease_method;
         self
     }
 
     pub fn set_delay(&mut self, delay: Duration) -> &mut Self {
         self.per = delay;
+        self.total_times = self.get_total_times();
         self
     }
 
     pub fn set_repeat(&mut self, repeat: Repeat) -> &mut Self {
         self.repeat = repeat;
+        self.total_times = self.get_total_times();
         self
     }
 
@@ -462,6 +537,24 @@ impl Animation {
 
     pub fn set_scale(&mut self, scale: Vec3) -> &mut Self {
         self.change.transform_scale = scale;
+        self
+    }
+
+    pub fn set_sprite(&mut self, width: f32, height: f32, color: Color) -> &mut Self {
+        self.change.sprite_width = width;
+        self.change.sprite_height = height;
+        self.change.sprite_color = color;
+        self
+    }
+
+    pub fn set_sprite_size(&mut self, width: f32, height: f32) -> &mut Self {
+        self.change.sprite_width = width;
+        self.change.sprite_height = height;
+        self
+    }
+
+    pub fn set_sprite_color(&mut self, color: Color) -> &mut Self {
+        self.change.sprite_color = color;
         self
     }
 }

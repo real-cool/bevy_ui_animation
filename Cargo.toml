@@ -9,6 +9,7 @@ edition = "2021"
 bevy = { default-features = false, version = "0.12", features = [
     "bevy_winit",
     "bevy_ui",
+    "bevy_sprite",
     "png"
 ]}
 interpolation = "0.3"
